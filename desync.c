@@ -139,6 +139,13 @@ ssize_t send_fake(int sfd, char *buffer,
         pkt = cnt != IS_HTTP ? fake_tls : fake_http;
     }
     size_t psz = pkt.size;
+    if (opt->fake_offset) {
+        if (psz > opt->fake_offset) { 
+            psz -= opt->fake_offset;
+            pkt.data += opt->fake_offset;
+        }
+        else psz = 0;
+    }
     
     int ffd = memfd_create("name", O_RDWR);
     if (ffd < 0) {
@@ -234,6 +241,13 @@ ssize_t send_fake(int sfd, char *buffer,
         pkt = cnt != IS_HTTP ? fake_tls : fake_http;
     }
     size_t psz = pkt.size;
+    if (opt->fake_offset) {
+        if (psz > opt->fake_offset) { 
+            psz -= opt->fake_offset;
+            pkt.data += opt->fake_offset;
+        }
+        else psz = 0;
+    }
     
     char path[MAX_PATH], temp[MAX_PATH + 1];
     int ps = GetTempPath(sizeof(temp), temp);
@@ -375,6 +389,27 @@ ssize_t send_disorder(int sfd,
 }
 
 
+ssize_t send_late_oob(int sfd, char *buffer,
+        ssize_t n, long pos, int fa)
+{
+    int bttl = 1;
+    
+    if (setttl(sfd, bttl, fa) < 0) {
+        return -1;
+    }
+    ssize_t len = send_oob(sfd, buffer, n, pos);
+    if (len < 0) {
+        uniperror("send");
+    }
+    wait_send_if_support(sfd);
+    
+    if (setttl(sfd, params.def_ttl, fa) < 0) {
+        return -1;
+    }
+    return len;
+}
+
+
 ssize_t desync(int sfd, char *buffer, size_t bfsize,
         ssize_t n, ssize_t offset, struct sockaddr *dst, int dp_c)
 {
@@ -454,14 +489,14 @@ ssize_t desync(int sfd, char *buffer, size_t bfsize,
             else 
                 pos += (host - buffer);
         }
-        else if (pos < 0) {
+        else if (pos < 0 || part.flag == OFFSET_END) {
             pos += n;
         }
         // after EAGAIN
-        if (pos <= offset) {
+        if (offset && pos <= offset) {
             continue;
         }
-        else if (pos <= 0 || pos >= n || pos <= lp) {
+        else if (pos < 0 || pos > n || pos < lp) {
             LOG(LOG_E, "split cancel: pos=%ld-%ld, n=%ld\n", lp, pos, n);
             break;
         }
@@ -483,6 +518,12 @@ ssize_t desync(int sfd, char *buffer, size_t bfsize,
                 s = send_oob(sfd, 
                     buffer + lp, n - lp, pos - lp);
                 wait_send_if_support(sfd);
+                break;
+                
+            case DESYNC_OOB2:
+                s = send_late_oob(sfd, 
+                    buffer + lp, n - lp, pos - lp, fa);
+                //wait_send_if_support(sfd);
                 break;
                 
             case DESYNC_SPLIT:
