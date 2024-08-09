@@ -15,6 +15,7 @@
     #include <sys/mman.h>
     #include <sys/sendfile.h>
     #include <fcntl.h>
+    #include <linux/filter.h>
 
     #include <desync.h>
     
@@ -69,6 +70,32 @@ int setttl(int fd, int ttl, int family) {
     }
     return 0;
 }
+
+#ifdef __linux__
+int drop_sack(int fd)
+{
+    struct sock_filter code[] = {
+        { 0x30, 0, 0, 0x0000000c },
+        { 0x74, 0, 0, 0x00000004 },
+        { 0x35, 0, 3, 0x0000000b },
+        { 0x30, 0, 0, 0x00000022 },
+        { 0x15, 0, 1, 0x00000005 },
+        { 0x6,  0, 0, 0x00000000 },
+        { 0x6,  0, 0, 0x00040000 },
+    };
+    struct sock_fprog bpf = {
+        .len = sizeof(code)/sizeof(*code),
+        .filter = code
+    };
+    if (setsockopt(fd, SOL_SOCKET, 
+            SO_ATTACH_FILTER, (char *)&bpf, sizeof(bpf)) == -1) {
+        uniperror("setsockopt SO_ATTACH_FILTER");
+        return -1;
+    }
+    return 0;
+}
+#endif
+
 
 #ifndef _WIN32
 static inline void delay(long ms)
@@ -470,6 +497,11 @@ ssize_t desync(int sfd, char *buffer, size_t bfsize,
         }
     }
     // desync
+    #ifdef __linux__
+    if (dp.drop_sack && drop_sack(sfd)) {
+        return -1;
+    }
+    #endif
     long lp = offset;
     
     for (int i = 0; i < dp.parts_n; i++) {
@@ -561,6 +593,23 @@ ssize_t desync(int sfd, char *buffer, size_t bfsize,
         }
     }
     return n;
+}
+
+
+int post_desync(int sfd, int dp_c)
+{
+    struct desync_params *dp = &params.dp[dp_c];
+    
+    #ifdef __linux__
+    if (dp->drop_sack) {
+        if (setsockopt(sfd, SOL_SOCKET, 
+                SO_DETACH_FILTER, &dp_c, sizeof(dp_c)) == -1) {
+            uniperror("setsockopt SO_DETACH_FILTER");
+            return -1;
+        }
+    }
+    #endif
+    return 0;
 }
 
 
